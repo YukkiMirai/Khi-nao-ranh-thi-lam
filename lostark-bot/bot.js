@@ -17,12 +17,12 @@ import {
   SlashCommandBuilder,
   EmbedBuilder,
   InteractionType,
-} from 'discord.js';
-import { JSDOM } from 'jsdom';
+} from "discord.js";
+import { JSDOM } from "jsdom";
 
-import config from './config.js';
-import { startMonitor, checkStatus, getState, resetState } from './monitor.js';
-import { STATUS } from './serverStatus.js';
+import config from "./config.js";
+import { startMonitor, checkStatus, getState, resetState } from "./monitor.js";
+import { STATUS } from "./serverStatus.js";
 
 // ─── Discord client ───────────────────────────────────────────────────────────
 
@@ -37,25 +37,25 @@ const client = new Client({
 
 const commands = [
   new SlashCommandBuilder()
-    .setName('status')
-    .setDescription('Show the current cached Brelshaza server status'),
+    .setName("status")
+    .setDescription("Show the current cached Brelshaza server status"),
 
   new SlashCommandBuilder()
-    .setName('check')
-    .setDescription('Force an immediate server status check right now'),
+    .setName("check")
+    .setDescription("Force an immediate server status check right now"),
 
   new SlashCommandBuilder()
-    .setName('reset')
-    .setDescription('Reset the stored status state back to default'),
+    .setName("reset")
+    .setDescription("Reset the stored status state back to default"),
 
   new SlashCommandBuilder()
-    .setName('roster')
-    .setDescription('List the roster for a Lost Ark character')
+    .setName("roster")
+    .setDescription("List the roster for a Lost Ark character")
     .addStringOption((opt) =>
       opt
-        .setName('name')
-        .setDescription('Character name to look up (e.g. Lazy)')
-        .setRequired(true)
+        .setName("name")
+        .setDescription("Character name to look up (e.g. Lazy)")
+        .setRequired(true),
     ),
 ].map((cmd) => cmd.toJSON());
 
@@ -67,13 +67,15 @@ const commands = [
  * you can register them per-guild for instant updates by passing a guildId.
  */
 async function registerCommands() {
-  const rest = new REST({ version: '10' }).setToken(config.token);
+  const rest = new REST({ version: "10" }).setToken(config.token);
   try {
-    console.log('[bot] Registering slash commands…');
-    await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-    console.log('[bot] Slash commands registered successfully.');
+    console.log("[bot] Registering slash commands…");
+    await rest.put(Routes.applicationCommands(client.user.id), {
+      body: commands,
+    });
+    console.log("[bot] Slash commands registered successfully.");
   } catch (err) {
-    console.error('[bot] Failed to register slash commands:', err.message);
+    console.error("[bot] Failed to register slash commands:", err.message);
   }
 }
 
@@ -86,10 +88,14 @@ async function registerCommands() {
  */
 function formatStatus(status) {
   switch (status) {
-    case STATUS.ONLINE:       return '🟢 Online';
-    case STATUS.OFFLINE:      return '🔴 Offline';
-    case STATUS.MAINTENANCE:  return '🟡 Maintenance';
-    default:                  return '❓ Unknown';
+    case STATUS.ONLINE:
+      return "🟢 Online";
+    case STATUS.OFFLINE:
+      return "🔴 Offline";
+    case STATUS.MAINTENANCE:
+      return "🟡 Maintenance";
+    default:
+      return "❓ Unknown";
   }
 }
 
@@ -104,34 +110,34 @@ async function handleStatusCommand(interaction) {
   const state = await getState();
 
   const embed = new EmbedBuilder()
-    .setTitle('Server status – Server Status')
+    .setTitle("Server status – Server Status")
     .addFields(
       {
-        name: 'Current Status',
+        name: "Current Status",
         value: formatStatus(state.lastStatus),
         inline: true,
       },
       {
-        name: 'Last Checked',
+        name: "Last Checked",
         value: state.lastCheckTime
           ? `<t:${Math.floor(new Date(state.lastCheckTime).getTime() / 1000)}:R>`
-          : 'Never',
+          : "Never",
         inline: true,
       },
       {
-        name: 'Last Alert Sent',
+        name: "Last Alert Sent",
         value: state.lastAlertTime
           ? `<t:${Math.floor(new Date(state.lastAlertTime).getTime() / 1000)}:R>`
-          : 'Never',
+          : "Never",
         inline: true,
-      }
+      },
     )
     .setColor(
       state.lastStatus === STATUS.ONLINE
         ? 0x57f287 // Green
         : state.lastStatus === STATUS.MAINTENANCE
-        ? 0xfee75c // Yellow
-        : 0xed4245 // Red / unknown
+          ? 0xfee75c // Yellow
+          : 0xed4245, // Red / unknown
     )
     .setTimestamp();
 
@@ -147,14 +153,14 @@ async function handleCheckCommand(interaction) {
   try {
     const current = await checkStatus(client);
     const embed = new EmbedBuilder()
-      .setTitle('Server status – Live Check')
+      .setTitle("Server status – Live Check")
       .setDescription(`Status right now: **${formatStatus(current)}**`)
       .setColor(
         current === STATUS.ONLINE
           ? 0x57f287
           : current === STATUS.MAINTENANCE
-          ? 0xfee75c
-          : 0xed4245
+            ? 0xfee75c
+            : 0xed4245,
       )
       .setTimestamp();
 
@@ -170,7 +176,7 @@ async function handleCheckCommand(interaction) {
  * /roster – scrape and display a character's roster from lostark.bible.
  */
 async function handleRosterCommand(interaction) {
-  const raw = interaction.options.getString('name');
+  const raw = interaction.options.getString("name");
   const name = raw.charAt(0).toUpperCase() + raw.slice(1);
   await interaction.deferReply();
 
@@ -186,7 +192,7 @@ async function handleRosterCommand(interaction) {
     const links = document.querySelectorAll('a[href^="/character/NA/"]');
 
     for (const link of links) {
-      const headerDiv = link.querySelector('.text-lg.font-semibold');
+      const headerDiv = link.querySelector(".text-lg.font-semibold");
       if (!headerDiv) continue;
 
       // First bare text node = character name
@@ -195,9 +201,9 @@ async function handleRosterCommand(interaction) {
         .map((n) => n.textContent.trim())
         .find((t) => t.length > 0);
 
-      const spans = headerDiv.querySelectorAll('span');
-      const itemLevel = spans[0]?.textContent.trim() ?? '?';
-      const combatScore = spans[1]?.textContent.trim() ?? '?';
+      const spans = headerDiv.querySelectorAll("span");
+      const itemLevel = spans[0]?.textContent.trim() ?? "?";
+      const combatScore = spans[1]?.textContent.trim() ?? "?";
 
       if (charName) characters.push({ name: charName, itemLevel, combatScore });
     }
@@ -219,24 +225,24 @@ async function handleRosterCommand(interaction) {
           const charHtml = await res.text();
           const { document: charDoc } = new JSDOM(charHtml).window;
           // Title lives in the h2 inside the header banner, in a styled <span>
-          const h2 = charDoc.querySelector('h2.flex.items-center');
+          const h2 = charDoc.querySelector("h2.flex.items-center");
           const titleSpan = h2?.querySelector('span[style*="color"]');
           c.title = titleSpan?.textContent.trim() ?? null;
         } catch {
           c.title = null;
         }
-      })
+      }),
     );
 
     const lines = characters.map(
       (c, i) =>
-        `**${i + 1}.** ${c.name} · \`${c.itemLevel}\`${c.title ? ` — *${c.title}*` : ''} · ${c.combatScore}`
+        `**${i + 1}.** ${c.name} · \`${c.itemLevel}\`${c.title ? ` — *${c.title}*` : ""} · ${c.combatScore}`,
     );
 
     // Discord embed description cap is 4096 chars; trim if needed
-    let description = lines.join('\n');
+    let description = lines.join("\n");
     if (description.length > 4000) {
-      description = description.slice(0, 4000) + '\n…';
+      description = description.slice(0, 4000) + "\n…";
     }
 
     const embed = new EmbedBuilder()
@@ -244,7 +250,9 @@ async function handleRosterCommand(interaction) {
       .setURL(url)
       .setDescription(description)
       .setColor(0x5865f2)
-      .setFooter({ text: `${characters.length} character(s) · titles shown for first 10` })
+      .setFooter({
+        text: `${characters.length} character(s) · titles shown for first 10`,
+      })
       .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
@@ -262,13 +270,14 @@ async function handleResetCommand(interaction) {
   await interaction.deferReply();
   await resetState();
   await interaction.editReply({
-    content: '✅ State has been reset. The bot will start tracking from the next check.',
+    content:
+      "✅ State has been reset. The bot will start tracking from the next check.",
   });
 }
 
 // ─── Event: client ready ──────────────────────────────────────────────────────
 
-client.once('ready', async () => {
+client.once("ready", async () => {
   console.log(`[bot] Logged in as ${client.user.tag}`);
 
   // Register slash commands now that we have the client ID
@@ -280,27 +289,30 @@ client.once('ready', async () => {
 
 // ─── Event: interaction created ──────────────────────────────────────────────
 
-client.on('interactionCreate', async (interaction) => {
+client.on("interactionCreate", async (interaction) => {
   // Only handle slash (chat input) commands
   if (interaction.type !== InteractionType.ApplicationCommand) return;
 
   const { commandName } = interaction;
 
   try {
-    if (commandName === 'status') {
+    if (commandName === "status") {
       await handleStatusCommand(interaction);
-    } else if (commandName === 'check') {
+    } else if (commandName === "check") {
       await handleCheckCommand(interaction);
-    } else if (commandName === 'reset') {
+    } else if (commandName === "reset") {
       await handleResetCommand(interaction);
-    } else if (commandName === 'roster') {
+    } else if (commandName === "roster") {
       await handleRosterCommand(interaction);
     }
   } catch (err) {
     console.error(`[bot] Unhandled error in /${commandName}:`, err);
 
     // Reply with an error if we haven't already responded
-    const reply = { content: '❌ An unexpected error occurred.', ephemeral: true };
+    const reply = {
+      content: "❌ An unexpected error occurred.",
+      ephemeral: true,
+    };
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply(reply).catch(() => {});
     } else {
@@ -311,12 +323,12 @@ client.on('interactionCreate', async (interaction) => {
 
 // ─── Event: unhandled errors ──────────────────────────────────────────────────
 
-process.on('unhandledRejection', (reason) => {
-  console.error('[bot] Unhandled promise rejection:', reason);
+process.on("unhandledRejection", (reason) => {
+  console.error("[bot] Unhandled promise rejection:", reason);
 });
 
-process.on('uncaughtException', (err) => {
-  console.error('[bot] Uncaught exception:', err);
+process.on("uncaughtException", (err) => {
+  console.error("[bot] Uncaught exception:", err);
   // Allow the process to exit so Docker/process managers can restart it
   process.exit(1);
 });
