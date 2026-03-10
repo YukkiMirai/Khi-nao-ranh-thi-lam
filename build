@@ -1,0 +1,3 @@
+cd /home/thanhnv/homelab/docker/apps
+[thanhnv@192 apps]$ docker compose build lostark-bot                                                                                   
+[thanhnv@192 apps]$ docker compose up -d
