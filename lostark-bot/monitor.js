@@ -47,10 +47,13 @@ async function saveState(state) {
 // ─── Notification builder ─────────────────────────────────────────────────────
 
 /**
- * Build and send the Discord "server is online" embed + role mention.
+ * Build and send a Discord status-change embed.
+ * Pings the configured role only when the server transitions TO online.
  * @param {import('discord.js').Client} client
+ * @param {string} fromStatus
+ * @param {string} toStatus
  */
-async function sendOnlineNotification(client) {
+async function sendStatusNotification(client, fromStatus, toStatus) {
   try {
     const channel = await client.channels.fetch(config.channelId);
     if (!channel || !channel.isTextBased()) {
@@ -58,18 +61,24 @@ async function sendOnlineNotification(client) {
       return;
     }
 
-    // Role mention string (<@&ROLE_ID>)
-    const roleMention = `<@&${config.roleId}>`;
+    // Only mention the role when the server comes online
+    const roleMention = toStatus === STATUS.ONLINE ? `<@&${config.roleId}>` : undefined;
 
-    // Embed matching the spec: title "Thông báo", Vietnamese celebration message
+    const descriptions = {
+      [STATUS.ONLINE]: 'Server status is online 🎉',
+      [STATUS.MAINTENANCE]: 'Server đang bảo trì 🔧',
+      [STATUS.OFFLINE]: 'Server đang offline ❌',
+    };
+    const description = descriptions[toStatus] ?? `Server status: ${toStatus}`;
+
     const embed = new EmbedBuilder()
       .setTitle('Thông báo')
-      .setDescription('Server status is online 🎉')
-      .setColor(15258703) // Decimal colour value from spec (#E9B84F amber-gold)
+      .setDescription(description)
+      .setColor(15258703) // #E9B84F amber-gold
       .setTimestamp();
 
     await channel.send({ content: roleMention, embeds: [embed] });
-    console.log('[monitor] Online notification sent.');
+    console.log(`[monitor] Status notification sent: ${fromStatus} → ${toStatus}.`);
   } catch (err) {
     console.error('[monitor] Failed to send notification:', err.message);
   }
@@ -111,15 +120,13 @@ export async function checkStatus(client) {
   }
 
   // ── Transition detection ──────────────────────────────────────────────────
-  // Only alert when transitioning FROM offline or maintenance TO online.
-  // This prevents duplicate alerts if the bot restarts while online.
-  const wasDown =
-    previousStatus === STATUS.OFFLINE || previousStatus === STATUS.MAINTENANCE;
-  const isNowOnline = currentStatus === STATUS.ONLINE;
+  // Alert on any status change (skip the very first check where previousStatus
+  // is null to avoid spurious notifications on bot startup).
+  const statusChanged = previousStatus !== null && previousStatus !== currentStatus;
 
-  if (wasDown && isNowOnline) {
-    console.log('[monitor] Transition detected: server came online – sending notification.');
-    await sendOnlineNotification(client);
+  if (statusChanged) {
+    console.log(`[monitor] Transition detected: ${previousStatus} → ${currentStatus}.`);
+    await sendStatusNotification(client, previousStatus, currentStatus);
     state.lastAlertTime = now;
   }
 

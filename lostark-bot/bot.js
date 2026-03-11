@@ -278,7 +278,7 @@ async function handleResetCommand(interaction) {
 // ─── Event: client ready ──────────────────────────────────────────────────────
 
 client.once("ready", async () => {
-  console.log(`[bot] Logged in as ${client.user.tag}`);
+  console.log(`[bot] Logged in as ${client.user.tag} v1.0.0`);
 
   // Register slash commands now that we have the client ID
   await registerCommands();
