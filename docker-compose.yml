@@ -6,3 +6,6 @@ services:
     build: ./lostark-bot
     container_name: lostark-bot
     restart: unless-stopped
+    volumes:
+      # Mount thư mục data ra ngoài host để status.json không bị mất khi container restart/rebuild
+      - ./lostark-bot/data:/app/data

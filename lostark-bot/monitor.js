@@ -105,23 +105,24 @@ export async function checkStatus(client) {
     console.log(`[monitor] Status fetched: ${currentStatus} (was: ${state.lastStatus ?? 'unknown'})`);
   } catch (err) {
     console.error('[monitor] Error fetching server status:', err.message);
-    // Update check time even on failure so we don't spam error logs with stale timestamps
+    // Dù lỗi, vẫn cập nhật lastCheckTime vào file để biết bot đã thử kiểm tra lúc nào.
+    // lastStatus KHÔNG thay đổi vì không lấy được status thực tế.
     state.lastCheckTime = new Date().toISOString();
     await saveState(state);
-    throw err; // Re-throw so callers (/check command) can report the error
+    throw err; // Ném lại lỗi để caller (lệnh /check) có thể báo lỗi cho người dùng
   }
 
   const previousStatus = state.lastStatus;
   const now = new Date().toISOString();
 
-  // Record the very first status observed
+  // Ghi lại status đầu tiên quan sát được
   if (state.initialStatus === null) {
     state.initialStatus = currentStatus;
   }
 
-  // ── Transition detection ──────────────────────────────────────────────────
-  // Alert on any status change (skip the very first check where previousStatus
-  // is null to avoid spurious notifications on bot startup).
+  // ── Phát hiện thay đổi trạng thái ────────────────────────────────────────
+  // Thông báo khi status thay đổi. Bỏ qua lần kiểm tra đầu tiên (previousStatus === null)
+  // để tránh gửi thông báo giả khi bot vừa khởi động.
   const statusChanged = previousStatus !== null && previousStatus !== currentStatus;
 
   if (statusChanged) {
@@ -130,7 +131,7 @@ export async function checkStatus(client) {
     state.lastAlertTime = now;
   }
 
-  // Persist updated state
+  // Lưu trạng thái mới vào file JSON
   state.lastStatus = currentStatus;
   state.lastCheckTime = now;
   await saveState(state);
