@@ -89,17 +89,22 @@ class MyBot(discord.Client):
         processed_text = self.normalize_text(text)
         try:
             audio_buffer = io.BytesIO()
+            ffmpeg_options = None
             if config['engine'] == "google":
                 tts = gTTS(text=processed_text, lang='vi')
                 tts.write_to_fp(audio_buffer)
+                try:
+                    rate_val = max(0.5, min(2.0, 1 + int(config['rate'].rstrip('%')) / 100))
+                    ffmpeg_options = f"-filter:a atempo={rate_val:.2f}"
+                except Exception:
+                    pass
             else:
-                c_rate = "+12%" if len(processed_text) < 150 else config['rate']
-                communicate = edge_tts.Communicate(processed_text, config['voice_name'], rate=c_rate)
+                communicate = edge_tts.Communicate(processed_text, config['voice_name'], rate=config['rate'])
                 async for chunk in communicate.stream():
                     if chunk["type"] == "audio": audio_buffer.write(chunk["data"])
             audio_buffer.seek(0)
             exe_path = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
-            vc.play(discord.FFmpegPCMAudio(audio_buffer, pipe=True, executable=exe_path))
+            vc.play(discord.FFmpegPCMAudio(audio_buffer, pipe=True, executable=exe_path, options=ffmpeg_options))
         except Exception as e:
             print(f"Lỗi phát: {e}")
 
@@ -120,9 +125,14 @@ class MyBot(discord.Client):
         if not content.strip(): return
         vc = message.guild.voice_client
         user_voice = message.author.voice
-        if user_voice and user_voice.channel:
-            if not vc: vc = await user_voice.channel.connect()
-            elif vc.channel != user_voice.channel: await vc.move_to(user_voice.channel)
+        if vc:
+            # Bot đang trong kênh voice, nói luôn không cần người gửi phải ở trong kênh
+            if user_voice and user_voice.channel and vc.channel != user_voice.channel:
+                await vc.move_to(user_voice.channel)
+            await self.speak(vc, content)
+        elif user_voice and user_voice.channel:
+            # Bot chưa vào kênh, chỉ vào nếu người gửi đang ở trong kênh voice
+            vc = await user_voice.channel.connect()
             await self.speak(vc, content)
 
 client = MyBot()
@@ -148,13 +158,33 @@ async def setup(
     global config
     if channel: config['text_channel_id'] = channel.id
     if engine: config['engine'] = engine.value
-    if speed and re.match(r'^[+-]\d+%$', speed): config['rate'] = speed
+    if speed:
+        try:
+            multiplier = float(speed)
+            config['rate'] = f"{(multiplier - 1) * 100:+.0f}%"
+        except ValueError:
+            pass
     if welcome_text: config['welcome_text'] = welcome_text
     if welcome_status: config['welcome_enabled'] = (welcome_status.value == "on")
     
     save_json(CONFIG_FILE, config)
-    status_str = "Bật" if config['welcome_enabled'] else "Tắt"
-    await interaction.response.send_message(f"✅ Đã cập nhật! (Chào mừng hiện tại: {status_str})", ephemeral=True)
+    channel_mention = f"<#{config['text_channel_id']}>" if config['text_channel_id'] else "Chưa đặt"
+    welcome_str = "Bật" if config['welcome_enabled'] else "Tắt"
+    try:
+        rate_float = 1 + int(config['rate'].rstrip('%')) / 100
+        rate_display = f"{rate_float:.2f}x ({config['rate']})"
+    except Exception:
+        rate_display = config['rate']
+    msg = (
+        f"✅ **Cấu hình hiện tại:**\n"
+        f"📢 Kênh text: {channel_mention}\n"
+        f"🔊 Engine TTS: `{config['engine']}`\n"
+        f"🎙️ Giọng: `{config['voice_name']}`\n"
+        f"⚡ Tốc độ: `{rate_display}`\n"
+        f"⏱️ Tự rời sau: `{config['auto_leave_seconds']}s`\n"
+        f"👋 Chào mừng: `{welcome_str}` — \"{config['welcome_text']}\""
+    )
+    await interaction.response.send_message(msg, ephemeral=True)
 
 @client.tree.command(name="slang_add", description="Thêm hoặc cập nhật từ lóng")
 async def slang_add(interaction: discord.Interaction, tu_viet_tat: str, doc_thanh: str):
