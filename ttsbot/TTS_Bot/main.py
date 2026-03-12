@@ -93,7 +93,7 @@ class MyBot(discord.Client):
             for vc in self.voice_clients:
                 real_users = [m for m in vc.channel.members if not m.bot]
                 elapsed = asyncio.get_running_loop().time() - self.last_active
-                if len(real_users) == 0 or elapsed > config['auto_leave_seconds']:
+                if len(real_users) == 0 and elapsed > config['auto_leave_seconds']:
                     await vc.disconnect()
 
     def normalize_text(self, text):
