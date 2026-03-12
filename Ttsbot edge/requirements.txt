@@ -1,5 +1,0 @@
-discord.py
-edge-tts
-gTTS
-python-dotenv
-PyNaCl
