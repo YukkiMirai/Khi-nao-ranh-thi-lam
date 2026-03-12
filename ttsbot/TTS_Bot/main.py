@@ -57,6 +57,28 @@ class MyBot(discord.Client):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         self.last_active = 0.0
+        self.tts_queues: dict[int, asyncio.Queue] = {}  # guild_id -> Queue
+
+    def get_queue(self, guild_id: int) -> asyncio.Queue:
+        if guild_id not in self.tts_queues:
+            self.tts_queues[guild_id] = asyncio.Queue()
+            asyncio.get_event_loop().create_task(self.queue_worker(guild_id))
+        return self.tts_queues[guild_id]
+
+    async def queue_worker(self, guild_id: int):
+        queue = self.tts_queues[guild_id]
+        while not self.is_closed():
+            vc, text = await queue.get()
+            try:
+                await self._speak(vc, text)
+            except Exception as e:
+                print(f"Lỗi queue worker: {e}")
+            finally:
+                queue.task_done()
+
+    async def enqueue(self, vc, text: str):
+        if not vc or not text.strip(): return
+        await self.get_queue(vc.guild.id).put((vc, text))
 
     async def setup_hook(self):
         await self.tree.sync()
@@ -83,9 +105,9 @@ class MyBot(discord.Client):
                 words[i] = slangs[clean_word]
         return " ".join(words)
 
-    async def speak(self, vc, text):
+    async def _speak(self, vc, text):
+        """Generate audio and play it, waiting until playback finishes."""
         if not vc or not text.strip(): return
-        if vc.is_playing(): vc.stop()
         processed_text = self.normalize_text(text)
         try:
             audio_buffer = io.BytesIO()
@@ -104,7 +126,12 @@ class MyBot(discord.Client):
                     if chunk["type"] == "audio": audio_buffer.write(chunk["data"])
             audio_buffer.seek(0)
             exe_path = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
-            vc.play(discord.FFmpegPCMAudio(audio_buffer, pipe=True, executable=exe_path, options=ffmpeg_options))
+            done = asyncio.get_running_loop().create_future()
+            def after_play(err):
+                done.get_loop().call_soon_threadsafe(done.set_result, err)
+            if vc.is_playing(): vc.stop()
+            vc.play(discord.FFmpegPCMAudio(audio_buffer, pipe=True, executable=exe_path, options=ffmpeg_options), after=after_play)
+            await done
         except Exception as e:
             print(f"Lỗi phát: {e}")
 
@@ -113,7 +140,12 @@ class MyBot(discord.Client):
         if config.get("welcome_enabled", True) and after.channel and before.channel != after.channel:
             vc = member.guild.voice_client
             if vc and vc.channel == after.channel and config['welcome_text']:
-                await self.speak(vc, f"{config['welcome_text']} {member.display_name}")
+                template = config['welcome_text']
+                if '${name}' in template:
+                    msg = template.replace('${name}', member.display_name)
+                else:
+                    msg = f"{template} {member.display_name}"
+                await self.enqueue(vc, msg)
 
     async def on_message(self, message):
         if message.author == self.user or message.channel.id != config['text_channel_id']:
@@ -129,17 +161,17 @@ class MyBot(discord.Client):
             # Bot đang trong kênh voice, nói luôn không cần người gửi phải ở trong kênh
             if user_voice and user_voice.channel and vc.channel != user_voice.channel:
                 await vc.move_to(user_voice.channel)
-            await self.speak(vc, content)
+            await self.enqueue(vc, content)
         elif user_voice and user_voice.channel:
             # Bot chưa vào kênh, chỉ vào nếu người gửi đang ở trong kênh voice
             vc = await user_voice.channel.connect()
-            await self.speak(vc, content)
+            await self.enqueue(vc, content)
 
 client = MyBot()
 
 # --- SLASH COMMANDS ---
 
-@client.tree.command(name="setup", description="Cấu hình bot (Kênh, Giọng, Chào mừng)")
+@client.tree.command(name="setup", description="Cấu hình bot (Kênh, Giọng, Chào mừng). Dùng ${name} trong welcome_text để chèn tên.")
 @app_commands.choices(engine=[
     app_commands.Choice(name="Edge TTS", value="edge"),
     app_commands.Choice(name="Google TTS", value="google")
