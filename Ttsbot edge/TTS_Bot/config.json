@@ -1,0 +1,8 @@
+{
+    "text_channel_id": 1481234098419667034,
+    "engine": "google",
+    "voice_name": "vi-VN-NamMinhNeural",
+    "rate": "+5%",
+    "auto_leave_seconds": 300,
+    "welcome_text": "Chào mừng"
+}
