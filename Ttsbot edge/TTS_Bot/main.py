@@ -1,114 +1,175 @@
 import discord
 from discord import app_commands
 import edge_tts
+from gtts import gTTS
 import io
 import os
 import re
+import json
 import asyncio
 from dotenv import load_dotenv
 
-# 1. LOAD CẤU HÌNH
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
-TEXT_CHANNEL_ID = int(os.getenv('TEXT_CHANNEL_ID'))
-VOICE_CHANNEL_ID = int(os.getenv('VOICE_CHANNEL_ID'))
-VOICE_NAME = os.getenv('VOICE_NAME', 'vi-VN-NamMinhNeural')
+
+CONFIG_FILE = 'config.json'
+DEFAULT_CONFIG = {
+    "text_channel_id": 0,
+    "engine": "edge",
+    "voice_name": "vi-VN-NamMinhNeural",
+    "rate": "+5%",
+    "auto_leave_seconds": 300,
+    "welcome_text": "Chào mừng"
+}
+
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            try:
+                return {**DEFAULT_CONFIG, **json.load(f)}
+            except:
+                return DEFAULT_CONFIG
+    return DEFAULT_CONFIG
+
+def save_config(config_data):
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(config_data, f, indent=4, ensure_ascii=False)
+
+config = load_config()
 
 class MyBot(discord.Client):
     def __init__(self):
-        # Bật các quyền cần thiết (Phải bật Message Content trong Dev Portal)
         intents = discord.Intents.default()
-        intents.message_content = True 
+        intents.message_content = True
+        intents.voice_states = True
+        intents.members = True
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
+        self.last_active = asyncio.get_event_loop().time()
 
     async def setup_hook(self):
-        # Đồng bộ Slash Commands nếu cần dùng sau này
         await self.tree.sync()
+        self.loop.create_task(self.check_voice_activity())
 
     async def on_ready(self):
-        print(f'--- BOT ĐÃ SẴN SÀNG ---')
-        print(f'Logged in as: {self.user}')
-        print(f'Monitoring Channel: {TEXT_CHANNEL_ID}')
-        
-        # Tự động kết nối Voice khi khởi động
-        channel = self.get_channel(VOICE_CHANNEL_ID)
-        if channel:
-            try:
-                await channel.connect()
-                print(f'Đã kết nối vào Voice Channel: {channel.name}')
-            except Exception as e:
-                print(f'Lỗi kết nối Voice ban đầu: {e}')
+        print(f'Bot {self.user} đã sẵn sàng. Dùng /setup để cấu hình nhanh!')
 
-    async def on_message(self, message):
-        # Không xử lý tin nhắn từ chính bot hoặc sai channel
-        if message.author == self.user or message.channel.id != TEXT_CHANNEL_ID:
-            return
+    async def check_voice_activity(self):
+        while not self.is_closed():
+            await asyncio.sleep(30)
+            for vc in self.voice_clients:
+                real_users = [m for m in vc.channel.members if not m.bot]
+                elapsed = asyncio.get_event_loop().time() - self.last_active
+                if len(real_users) == 0 or elapsed > config['auto_leave_seconds']:
+                    await vc.disconnect()
 
-        # --- XỬ LÝ NỘI DUNG VĂN BẢN ---
-        # Lấy nội dung sạch (đã chuyển @User thành tên)
-        raw_content = message.clean_content
-
-        # Regex xóa ID Emoji: <:haha:123456789> -> haha
-        # Lọc cả emoji động <a:name:id> và tĩnh <:name:id>
-        clean_content = re.sub(r'<a?(:.*:)\d+>', r'\1', raw_content)
-        
-        # Xóa dấu hai chấm để đọc mượt hơn
-        clean_content = clean_content.replace(":", " ")
-
-        # Đọc tên Sticker nếu có
-        if message.stickers:
-            for sticker in message.stickers:
-                clean_content += f"{sticker.name}"
-
-        # Nếu tin nhắn không có chữ (chỉ có ảnh/file) thì bỏ qua
-        if not clean_content.strip():
-            return
-
-        # --- XỬ LÝ VOICE CLIENT ---
-        vc = message.guild.voice_client
-        if not vc:
-            channel = self.get_channel(VOICE_CHANNEL_ID)
-            if channel:
-                vc = await channel.connect()
-            else:
-                return
-
-        # Nếu đang đọc dở thì dừng để đọc tin mới ngay (Ưu tiên realtime)
-        if vc.is_playing():
-            vc.stop()
-
-        # --- STREAMING TTS QUA RAM ---
+    async def speak(self, vc, text):
+        if not vc or not text.strip(): return
+        if vc.is_playing(): vc.stop()
         try:
-            print(f"Đang đọc từ {message.author.display_name}: {clean_content}")
-            
-            # Khởi tạo luồng Streaming từ Edge-TTS
-            communicate = edge_tts.Communicate(clean_content, VOICE_NAME, rate="+5%")
             audio_buffer = io.BytesIO()
-            
-            # Vừa tải vừa ghi vào RAM buffer
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    audio_buffer.write(chunk["data"])
-            
-            # Đưa con trỏ về đầu để FFmpeg đọc từ đầu
+            if config['engine'] == "google":
+                tts = gTTS(text=text, lang='vi')
+                tts.write_to_fp(audio_buffer)
+            else:
+                c_rate = "+12%" if len(text) < 150 else config['rate']
+                communicate = edge_tts.Communicate(text, config['voice_name'], rate=c_rate)
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio": audio_buffer.write(chunk["data"])
             audio_buffer.seek(0)
-
-            # Phát qua FFmpeg bằng Pipe (Không tạo file rác trên ổ cứng)
-            # executable="ffmpeg.exe" dùng cho Windows. 
-            # Khi lên Linux T480s, hãy đổi thành executable="ffmpeg"
-            source = discord.FFmpegPCMAudio(
+            # Kiểm tra hệ điều hành: nếu là Windows (nt) thì dùng .exe, ngược lại dùng lệnh ffmpeg
+            exe_path = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+            
+            vc.play(discord.FFmpegPCMAudio(
                 audio_buffer, 
                 pipe=True, 
-                executable="ffmpeg.exe" 
-            )
-            
-            vc.play(source)
-
+                executable=exe_path
+            ))
+            # --------------------
         except Exception as e:
-            print(f"Lỗi khi xử lý TTS: {e}")
+            print(f"Lỗi phát: {e}")
 
-# Chạy Bot
-if __name__ == "__main__":
-    client = MyBot()
-    client.run(TOKEN)
+    async def on_voice_state_update(self, member, before, after):
+        if member.bot: return
+        if after.channel and before.channel != after.channel:
+            vc = member.guild.voice_client
+            if vc and vc.channel == after.channel and config['welcome_text']:
+                await self.speak(vc, f"{config['welcome_text']} {member.display_name}")
+
+    async def on_message(self, message):
+        if message.author == self.user or message.channel.id != config['text_channel_id']:
+            return
+        self.last_active = asyncio.get_event_loop().time()
+        content = re.sub(r'<a?(:.*:)\d+>', r'\1', message.clean_content).replace(":", " ")
+        if message.stickers:
+            for s in message.stickers: content += f" {s.name}"
+        if not content.strip(): return
+        vc = message.guild.voice_client
+        user_voice = message.author.voice
+        if user_voice and user_voice.channel:
+            if not vc: vc = await user_voice.channel.connect()
+            elif vc.channel != user_voice.channel: await vc.move_to(user_voice.channel)
+            await self.speak(vc, content)
+
+client = MyBot()
+
+# --- SIÊU LỆNH SETUP TỔNG HỢP ---
+
+@client.tree.command(name="setup", description="Cấu hình nhanh toàn bộ bot")
+@app_commands.describe(
+    channel="Kênh text bot sẽ nghe (Hiện tại: " + str(config['text_channel_id']) + ")",
+    engine="Chọn bộ đọc (Hiện tại: " + config['engine'] + ")",
+    voice="Chọn giọng Edge (Hiện tại: " + config['voice_name'] + ")",
+    speed="Tốc độ đọc (Hiện tại: " + config['rate'] + ")",
+    welcome="Câu chào mừng (Hiện tại: " + config['welcome_text'] + ")"
+)
+@app_commands.choices(engine=[
+    app_commands.Choice(name="Microsoft Edge (Tự nhiên)", value="edge"),
+    app_commands.Choice(name="Google TTS (Chị Google)", value="google")
+], voice=[
+    app_commands.Choice(name="Nam Minh (Nam)", value="vi-VN-NamMinhNeural"),
+    app_commands.Choice(name="Hoài My (Nữ)", value="vi-VN-HoaiMyNeural")
+])
+async def setup(
+    interaction: discord.Interaction, 
+    channel: discord.TextChannel = None,
+    engine: app_commands.Choice[str] = None,
+    voice: app_commands.Choice[str] = None,
+    speed: str = None,
+    welcome: str = None
+):
+    global config
+    changes = []
+
+    if channel:
+        config['text_channel_id'] = channel.id
+        changes.append(f"Kênh: {channel.mention}")
+    
+    if engine:
+        config['engine'] = engine.value
+        changes.append(f"Engine: {engine.name}")
+
+    if voice:
+        config['voice_name'] = voice.value
+        changes.append(f"Giọng: {voice.name}")
+
+    if speed:
+        if re.match(r'^[+-]\d+%$', speed):
+            config['rate'] = speed
+            changes.append(f"Tốc độ: {speed}")
+        else:
+            return await interaction.response.send_message("Tốc độ sai định dạng (+5%, -10%...)", ephemeral=True)
+
+    if welcome is not None:
+        config['welcome_text'] = welcome
+        changes.append(f"Chào mừng: {welcome if welcome else 'Đã tắt'}")
+
+    if not changes:
+        return await interaction.response.send_message("Bạn chưa thay đổi gì!", ephemeral=True)
+
+    save_config(config)
+    
+    summary = "\n".join([f"✅ {item}" for item in changes])
+    await interaction.response.send_message(f"**Đã cập nhật cấu hình:**\n{summary}", ephemeral=True)
+
+client.run(TOKEN)
