@@ -1,8 +1,0 @@
-version: "3.9"
-
-services:
-
-  lostark-bot:
-    build: ./lostark-bot
-    container_name: lostark-bot
-    restart: unless-stopped

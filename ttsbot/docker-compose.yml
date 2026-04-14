@@ -1,0 +1,15 @@
+services:
+  tts-bot:
+    build: .
+    container_name: tts_bot_container
+    restart: always
+    env_file:
+      - ./TTS_Bot/.env  # Thêm TTS_Bot/ vào trước
+    volumes:
+      - ./TTS_Bot/config.json:/app/config.json
+      - ./TTS_Bot/slang.json:/app/slang.json
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10mb"
+        max-file: "3"
