@@ -7,34 +7,41 @@ import os
 import re
 import json
 import asyncio
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 
-CONFIG_FILE = 'config.json'
-SLANG_FILE = 'slang.json'
+BASE_DIR = Path(__file__).resolve().parent
+CONFIG_FILE = BASE_DIR / 'config.json'
+SLANG_FILE = BASE_DIR / 'slang.json'
+IDLE_DISCONNECT_SECONDS = 3600
+VOICE_IDLE_CHECK_INTERVAL = 60
 
 DEFAULT_CONFIG = {
+    "guild_id": 0,
     "text_channel_id": 0,
     "engine": "edge",
     "voice_name": "vi-VN-NamMinhNeural",
     "rate": "+5%",
-    "auto_leave_seconds": 300,
+    "auto_leave_seconds": IDLE_DISCONNECT_SECONDS,
     "welcome_text": "Chào mừng",
     "welcome_enabled": True 
 }
 
 def load_json(file_path, default_data):
-    if os.path.exists(file_path):
-        with open(file_path, 'r', encoding='utf-8') as f:
+    file_path = Path(file_path)
+    if file_path.exists():
+        with file_path.open('r', encoding='utf-8') as f:
             try: return json.load(f)
             except: return default_data
     save_json(file_path, default_data)
     return default_data
 
 def save_json(file_path, data):
-    with open(file_path, 'w', encoding='utf-8') as f:
+    file_path = Path(file_path)
+    with file_path.open('w', encoding='utf-8') as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 config = load_json(CONFIG_FILE, DEFAULT_CONFIG)
@@ -44,6 +51,9 @@ for _k, _v in DEFAULT_CONFIG.items():
     if _k not in config:
         config[_k] = _v
         _updated = True
+if config.get('auto_leave_seconds') != IDLE_DISCONNECT_SECONDS:
+    config['auto_leave_seconds'] = IDLE_DISCONNECT_SECONDS
+    _updated = True
 if _updated:
     save_json(CONFIG_FILE, config)
 slangs = load_json(SLANG_FILE, {})
@@ -57,44 +67,111 @@ class MyBot(discord.Client):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         self.last_active = 0.0
-        self.tts_queues: dict[int, asyncio.Queue] = {}  # guild_id -> Queue
+        self.allowed_guild_id = int(config.get('guild_id') or 0)
+        self.tts_queues: dict[int, asyncio.Queue[str]] = {}
+        self.queue_workers: dict[int, asyncio.Task] = {}
+        self.voice_locks: dict[int, asyncio.Lock] = {}
+        self.idle_task: asyncio.Task | None = None
+
+    def is_allowed_guild(self, guild_id: int | None) -> bool:
+        if not guild_id:
+            return False
+        return not self.allowed_guild_id or guild_id == self.allowed_guild_id
+
+    def bind_guild(self, guild_id: int):
+        if not guild_id:
+            return
+        if self.allowed_guild_id and self.allowed_guild_id != guild_id:
+            return
+        if self.allowed_guild_id != guild_id:
+            self.allowed_guild_id = guild_id
+            config['guild_id'] = guild_id
+            save_json(CONFIG_FILE, config)
+
+    def touch_activity(self):
+        self.last_active = asyncio.get_running_loop().time()
 
     def get_queue(self, guild_id: int) -> asyncio.Queue:
-        if guild_id not in self.tts_queues:
-            self.tts_queues[guild_id] = asyncio.Queue()
-            asyncio.get_event_loop().create_task(self.queue_worker(guild_id))
-        return self.tts_queues[guild_id]
+        queue = self.tts_queues.get(guild_id)
+        if queue is None:
+            queue = asyncio.Queue()
+            self.tts_queues[guild_id] = queue
+        worker = self.queue_workers.get(guild_id)
+        if worker is None or worker.done():
+            self.queue_workers[guild_id] = asyncio.create_task(self.queue_worker(guild_id))
+        return queue
+
+    def get_voice_lock(self, guild_id: int) -> asyncio.Lock:
+        lock = self.voice_locks.get(guild_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self.voice_locks[guild_id] = lock
+        return lock
 
     async def queue_worker(self, guild_id: int):
         queue = self.tts_queues[guild_id]
         while not self.is_closed():
-            vc, text = await queue.get()
+            text = await queue.get()
             try:
-                await self._speak(vc, text)
+                await self._speak(guild_id, text)
             except Exception as e:
                 print(f"Lỗi queue worker: {e}")
             finally:
                 queue.task_done()
 
-    async def enqueue(self, vc, text: str):
-        if not vc or not text.strip(): return
-        await self.get_queue(vc.guild.id).put((vc, text))
+    async def enqueue(self, guild_id: int, text: str):
+        if not text.strip():
+            return
+        self.touch_activity()
+        await self.get_queue(guild_id).put(text)
 
     async def setup_hook(self):
-        await self.tree.sync()
-        self.loop.create_task(self.check_voice_activity())
+        if self.allowed_guild_id:
+            guild_obj = discord.Object(id=self.allowed_guild_id)
+            self.tree.copy_global_to(guild=guild_obj)
+            await self.tree.sync(guild=guild_obj)
+        else:
+            await self.tree.sync()
+        self.touch_activity()
+        self.idle_task = asyncio.create_task(self.check_voice_activity())
 
     async def on_ready(self):
         print(f'Bot {self.user} đã sẵn sàng với bộ lệnh slang đầy đủ!')
+        if not self.allowed_guild_id and len(self.guilds) == 1:
+            self.bind_guild(self.guilds[0].id)
+            guild_obj = discord.Object(id=self.allowed_guild_id)
+            self.tree.copy_global_to(guild=guild_obj)
+            try:
+                await self.tree.sync(guild=guild_obj)
+            except Exception as e:
+                print(f"Lỗi sync slash command theo guild: {e}")
 
     async def check_voice_activity(self):
         while not self.is_closed():
-            await asyncio.sleep(30)
-            for vc in self.voice_clients:
-                real_users = [m for m in vc.channel.members if not m.bot]
-                elapsed = asyncio.get_running_loop().time() - self.last_active
-                if len(real_users) == 0 and elapsed > config['auto_leave_seconds']:
-                    await vc.disconnect()
+            await asyncio.sleep(VOICE_IDLE_CHECK_INTERVAL)
+            now = asyncio.get_running_loop().time()
+            if self.last_active <= 0 or (now - self.last_active) < IDLE_DISCONNECT_SECONDS:
+                continue
+            for guild in self.guilds:
+                if not self.is_allowed_guild(guild.id):
+                    continue
+                vc = guild.voice_client
+                if not vc or not vc.is_connected() or vc.is_playing() or vc.is_paused():
+                    continue
+                queue = self.tts_queues.get(guild.id)
+                if queue and not queue.empty():
+                    continue
+                async with self.get_voice_lock(guild.id):
+                    vc = guild.voice_client
+                    if not vc or not vc.is_connected() or vc.is_playing() or vc.is_paused():
+                        continue
+                    queue = self.tts_queues.get(guild.id)
+                    if queue and not queue.empty():
+                        continue
+                    try:
+                        await vc.disconnect(force=True)
+                    except Exception as e:
+                        print(f"Lỗi disconnect voice: {e}")
 
     def normalize_text(self, text):
         # Tách từ và thay thế dựa trên slang.json
@@ -105,38 +182,62 @@ class MyBot(discord.Client):
                 words[i] = slangs[clean_word]
         return " ".join(words)
 
-    async def _speak(self, vc, text):
+    async def _speak(self, guild_id, text):
         """Generate audio and play it, waiting until playback finishes."""
-        if not vc or not text.strip(): return
+        if not text.strip():
+            return
+        guild = self.get_guild(guild_id)
+        if not guild:
+            return
         processed_text = self.normalize_text(text)
-        try:
+        async with self.get_voice_lock(guild_id):
+            vc = guild.voice_client
+            if not vc or not vc.is_connected():
+                return
             audio_buffer = io.BytesIO()
             ffmpeg_options = None
-            if config['engine'] == "google":
-                tts = gTTS(text=processed_text, lang='vi')
-                tts.write_to_fp(audio_buffer)
+            try:
+                if config['engine'] == "google":
+                    tts = gTTS(text=processed_text, lang='vi')
+                    tts.write_to_fp(audio_buffer)
+                    try:
+                        rate_val = max(0.5, min(2.0, 1 + int(config['rate'].rstrip('%')) / 100))
+                        ffmpeg_options = f"-filter:a atempo={rate_val:.2f}"
+                    except Exception:
+                        pass
+                else:
+                    communicate = edge_tts.Communicate(processed_text, config['voice_name'], rate=config['rate'])
+                    async for chunk in communicate.stream():
+                        if chunk["type"] == "audio":
+                            audio_buffer.write(chunk["data"])
+                audio_buffer.seek(0)
+                exe_path = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+                done = asyncio.get_running_loop().create_future()
+
+                def after_play(err):
+                    if done.done():
+                        return
+                    loop = done.get_loop()
+                    if err:
+                        loop.call_soon_threadsafe(done.set_exception, err)
+                    else:
+                        loop.call_soon_threadsafe(done.set_result, None)
+
+                source = discord.FFmpegPCMAudio(audio_buffer, pipe=True, executable=exe_path, options=ffmpeg_options)
                 try:
-                    rate_val = max(0.5, min(2.0, 1 + int(config['rate'].rstrip('%')) / 100))
-                    ffmpeg_options = f"-filter:a atempo={rate_val:.2f}"
+                    vc.play(source, after=after_play)
                 except Exception:
-                    pass
-            else:
-                communicate = edge_tts.Communicate(processed_text, config['voice_name'], rate=config['rate'])
-                async for chunk in communicate.stream():
-                    if chunk["type"] == "audio": audio_buffer.write(chunk["data"])
-            audio_buffer.seek(0)
-            exe_path = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
-            done = asyncio.get_running_loop().create_future()
-            def after_play(err):
-                done.get_loop().call_soon_threadsafe(done.set_result, err)
-            if vc.is_playing(): vc.stop()
-            vc.play(discord.FFmpegPCMAudio(audio_buffer, pipe=True, executable=exe_path, options=ffmpeg_options), after=after_play)
-            await done
-        except Exception as e:
-            print(f"Lỗi phát: {e}")
+                    source.cleanup()
+                    raise
+                await done
+            except Exception as e:
+                print(f"Lỗi phát: {e}")
+            finally:
+                audio_buffer.close()
 
     async def on_voice_state_update(self, member, before, after):
         if member.bot: return
+        if not self.is_allowed_guild(member.guild.id): return
         if config.get("welcome_enabled", True) and after.channel and before.channel != after.channel:
             vc = member.guild.voice_client
             if vc and vc.channel == after.channel and config['welcome_text']:
@@ -145,27 +246,36 @@ class MyBot(discord.Client):
                     msg = template.replace('${name}', member.display_name)
                 else:
                     msg = f"{template} {member.display_name}"
-                await self.enqueue(vc, msg)
+                await self.enqueue(member.guild.id, msg)
 
     async def on_message(self, message):
-        if message.author == self.user or message.channel.id != config['text_channel_id']:
+        if not message.guild or message.author == self.user:
             return
-        self.last_active = asyncio.get_running_loop().time()
+        if not self.is_allowed_guild(message.guild.id):
+            return
+        if message.channel.id != int(config['text_channel_id']):
+            return
+        self.touch_activity()
         content = re.sub(r'<a?(:.*:)\d+>', r'\1', message.clean_content).replace(":", " ")
         if message.stickers:
             for s in message.stickers: content += f" {s.name}"
         if not content.strip(): return
-        vc = message.guild.voice_client
         user_voice = message.author.voice
-        if vc:
-            # Bot đang trong kênh voice, nói luôn không cần người gửi phải ở trong kênh
-            if user_voice and user_voice.channel and vc.channel != user_voice.channel:
-                await vc.move_to(user_voice.channel)
-            await self.enqueue(vc, content)
-        elif user_voice and user_voice.channel:
-            # Bot chưa vào kênh, chỉ vào nếu người gửi đang ở trong kênh voice
-            vc = await user_voice.channel.connect()
-            await self.enqueue(vc, content)
+        async with self.get_voice_lock(message.guild.id):
+            vc = message.guild.voice_client
+            if vc:
+                if user_voice and user_voice.channel and vc.channel != user_voice.channel and not vc.is_playing() and not vc.is_paused():
+                    try:
+                        await vc.move_to(user_voice.channel)
+                    except Exception as e:
+                        print(f"Lỗi move voice: {e}")
+                await self.enqueue(message.guild.id, content)
+            elif user_voice and user_voice.channel:
+                try:
+                    await user_voice.channel.connect()
+                except discord.ClientException:
+                    pass
+                await self.enqueue(message.guild.id, content)
 
 client = MyBot()
 
@@ -188,6 +298,13 @@ async def setup(
     welcome_status: app_commands.Choice[str] = None
 ):
     global config
+    if interaction.guild_id is None:
+        await interaction.response.send_message("Bot này chỉ hoạt động trong server.", ephemeral=True)
+        return
+    if client.allowed_guild_id and interaction.guild_id != client.allowed_guild_id:
+        await interaction.response.send_message("Bot này đã được khóa cho một server khác.", ephemeral=True)
+        return
+    client.bind_guild(interaction.guild_id)
     if channel: config['text_channel_id'] = channel.id
     if engine: config['engine'] = engine.value
     if speed:
@@ -198,6 +315,7 @@ async def setup(
             pass
     if welcome_text: config['welcome_text'] = welcome_text
     if welcome_status: config['welcome_enabled'] = (welcome_status.value == "on")
+    config['auto_leave_seconds'] = IDLE_DISCONNECT_SECONDS
     
     save_json(CONFIG_FILE, config)
     channel_mention = f"<#{config['text_channel_id']}>" if config['text_channel_id'] else "Chưa đặt"
@@ -213,7 +331,7 @@ async def setup(
         f"🔊 Engine TTS: `{config['engine']}`\n"
         f"🎙️ Giọng: `{config['voice_name']}`\n"
         f"⚡ Tốc độ: `{rate_display}`\n"
-        f"⏱️ Tự rời sau: `{config['auto_leave_seconds']}s`\n"
+        f"⏱️ Tự rời sau: `{IDLE_DISCONNECT_SECONDS}s không hoạt động`\n"
         f"👋 Chào mừng: `{welcome_str}` — \"{config['welcome_text']}\""
     )
     await interaction.response.send_message(msg, ephemeral=True)
