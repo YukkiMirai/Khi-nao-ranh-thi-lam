@@ -50,7 +50,7 @@ const config = {
   statusUrl: 'https://www.playlostark.com/en-gb/support/server-status',
 
   /** The server name to monitor */
-  targetServer: 'Brelshaza',
+  targetServer: 'Thaemine',
 
   /** Path to the local state file */
   stateFilePath: './data/status.json',
